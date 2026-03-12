@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Environment — contains real secrets, NEVER commit this
+.env
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test output
+coverage/

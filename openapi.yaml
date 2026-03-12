@@ -1,0 +1,2458 @@
+openapi: 3.1.0
+info:
+  title: Powerlifting App API
+  version: 1.0.0
+  description: |
+    REST API for the Powerlifting App — a multi-user workout tracking platform
+    for athletes and coaches.
+
+    ## Auth
+    All endpoints except `/auth/register`, `/auth/login`, and `/auth/token`
+    require `Authorization: Bearer <access_token>`.
+
+    ## Errors
+    All error responses use **RFC 7807 Problem Details** with
+    `Content-Type: application/problem+json`.
+
+    ## REQ mapping
+    Each operation carries an `x-req` extension listing the requirement IDs it
+    fulfils (e.g. `x-req: [REQ-001]`).
+
+servers:
+  - url: https://api.example.com/api/v1
+    description: Production
+  - url: http://localhost:8000/api/v1
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Registration, login, logout (REQ-001, REQ-002)
+  - name: Users
+    description: Self-service profile management (REQ-003, REQ-004)
+  - name: Relationships
+    description: Coach–athlete roster and invitations (REQ-005)
+  - name: Exercises
+    description: Exercise library — defaults and custom (REQ-006, REQ-007)
+  - name: Programs
+    description: Program authoring (REQ-008, REQ-009)
+  - name: Assignments
+    description: Program assignment and athlete view (REQ-010, REQ-011)
+  - name: Sessions
+    description: Workout session lifecycle (REQ-012, REQ-013, REQ-016, REQ-017)
+  - name: Sets
+    description: Individual set logging (REQ-014, REQ-015)
+  - name: PersonalRecords
+    description: PR tracking (REQ-018, REQ-019, REQ-020)
+  - name: CoachDashboard
+    description: Coach read-only views of athlete data (REQ-021, REQ-022)
+
+security:
+  - bearerAuth: []
+
+# =============================================================================
+# COMPONENTS
+# =============================================================================
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  # ---------------------------------------------------------------------------
+  # SCHEMAS
+  # ---------------------------------------------------------------------------
+  schemas:
+
+    # --- Primitives -----------------------------------------------------------
+
+    UUID:
+      type: string
+      format: uuid
+      example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+
+    ISODateTime:
+      type: string
+      format: date-time
+      example: "2026-03-11T14:00:00Z"
+
+    ISODate:
+      type: string
+      format: date
+      example: "2026-03-11"
+
+    # --- RFC 7807 Problem Details ---------------------------------------------
+
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          example: "https://api.example.com/problems/validation-error"
+        title:
+          type: string
+          example: "Validation Error"
+        status:
+          type: integer
+          example: 400
+        detail:
+          type: string
+          example: "email must be a valid email address"
+        instance:
+          type: string
+          format: uri
+          example: "/api/v1/auth/register"
+
+    # --- Auth (REQ-001, REQ-002) ----------------------------------------------
+
+    RegisterRequest:
+      type: object
+      required: [email, password, role]
+      properties:
+        email:
+          type: string
+          format: email
+          example: "lifter@example.com"
+        password:
+          type: string
+          minLength: 8
+          example: "Str0ngP@ss"
+        role:
+          type: string
+          enum: [athlete, coach]
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    AuthResponse:
+      type: object
+      required: [accessToken, user]
+      properties:
+        accessToken:
+          type: string
+          description: Short-lived JWT (15 min TTL). Refresh token returned as httpOnly cookie.
+        user:
+          $ref: '#/components/schemas/UserSummary'
+
+    TokenResponse:
+      type: object
+      required: [accessToken]
+      properties:
+        accessToken:
+          type: string
+
+    # --- Users / Profile (REQ-003, REQ-004) ----------------------------------
+
+    UserSummary:
+      type: object
+      required: [id, email, role, profile]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [athlete, coach]
+        profile:
+          oneOf:
+            - $ref: '#/components/schemas/AthleteProfile'
+            - $ref: '#/components/schemas/CoachProfile'
+          discriminator:
+            propertyName: role
+
+    AthleteProfile:
+      type: object
+      required: [displayName]
+      properties:
+        displayName:
+          type: string
+          example: "Jane Lifter"
+        weightClass:
+          type: string
+          nullable: true
+          example: "72kg"
+        dateOfBirth:
+          type: string
+          format: date
+          nullable: true
+          example: "1995-06-15"
+
+    CoachProfile:
+      type: object
+      required: [displayName]
+      properties:
+        displayName:
+          type: string
+          example: "Coach Mike"
+        bio:
+          type: string
+          nullable: true
+          example: "USAPL certified coach, 10 years experience."
+
+    UpdateAthleteProfileRequest:
+      type: object
+      minProperties: 1
+      properties:
+        displayName:
+          type: string
+        weightClass:
+          type: string
+          nullable: true
+        dateOfBirth:
+          type: string
+          format: date
+          nullable: true
+
+    UpdateCoachProfileRequest:
+      type: object
+      minProperties: 1
+      properties:
+        displayName:
+          type: string
+        bio:
+          type: string
+          nullable: true
+
+    # --- Relationships (REQ-005) ----------------------------------------------
+
+    Relationship:
+      type: object
+      required: [id, coachId, athleteId, status, invitedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        coachId:
+          $ref: '#/components/schemas/UUID'
+        athleteId:
+          $ref: '#/components/schemas/UUID'
+        status:
+          type: string
+          enum: [pending, active, declined, removed]
+        invitedAt:
+          $ref: '#/components/schemas/ISODateTime'
+        resolvedAt:
+          $ref: '#/components/schemas/ISODateTime'
+          nullable: true
+
+    AthleteRosterEntry:
+      type: object
+      required: [relationshipId, athlete]
+      properties:
+        relationshipId:
+          $ref: '#/components/schemas/UUID'
+        athlete:
+          $ref: '#/components/schemas/UserSummary'
+
+    InviteAthleteRequest:
+      type: object
+      required: [athleteEmail]
+      properties:
+        athleteEmail:
+          type: string
+          format: email
+
+    RespondInvitationRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [accept, decline]
+
+    # --- Exercises (REQ-006, REQ-007) -----------------------------------------
+
+    Exercise:
+      type: object
+      required: [id, name, isDefault, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        name:
+          type: string
+          example: "Squat"
+        isDefault:
+          type: boolean
+        createdBy:
+          $ref: '#/components/schemas/UUID'
+          nullable: true
+        createdAt:
+          $ref: '#/components/schemas/ISODateTime'
+
+    ExerciseList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Exercise'
+
+    CreateExerciseRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: "Slingshot Bench Press"
+
+    UpdateExerciseRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+
+    # --- Programs (REQ-008) ---------------------------------------------------
+
+    Program:
+      type: object
+      required: [id, coachId, name, durationWeeks, daysPerWeek, status, createdAt, updatedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        coachId:
+          $ref: '#/components/schemas/UUID'
+        name:
+          type: string
+          example: "12-Week Peaking Block"
+        description:
+          type: string
+          nullable: true
+        durationWeeks:
+          type: integer
+          minimum: 1
+          example: 12
+        daysPerWeek:
+          type: integer
+          minimum: 1
+          maximum: 7
+          example: 4
+        status:
+          type: string
+          enum: [draft, published]
+        createdAt:
+          $ref: '#/components/schemas/ISODateTime'
+        updatedAt:
+          $ref: '#/components/schemas/ISODateTime'
+
+    ProgramList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Program'
+
+    CreateProgramRequest:
+      type: object
+      required: [name, durationWeeks, daysPerWeek]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+          nullable: true
+        durationWeeks:
+          type: integer
+          minimum: 1
+        daysPerWeek:
+          type: integer
+          minimum: 1
+          maximum: 7
+
+    UpdateProgramRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        durationWeeks:
+          type: integer
+          minimum: 1
+        daysPerWeek:
+          type: integer
+          minimum: 1
+          maximum: 7
+        status:
+          type: string
+          enum: [draft, published]
+
+    # --- Program Days (REQ-009) -----------------------------------------------
+
+    ExerciseSlot:
+      type: object
+      required: [slotId, exerciseId, order, targetSets, targetReps]
+      properties:
+        slotId:
+          $ref: '#/components/schemas/UUID'
+        exerciseId:
+          $ref: '#/components/schemas/UUID'
+        order:
+          type: integer
+          minimum: 0
+          description: Zero-based display order within the day.
+        targetSets:
+          type: integer
+          minimum: 1
+        targetReps:
+          type: integer
+          minimum: 1
+        targetWeightLbs:
+          type: number
+          format: float
+          nullable: true
+        targetPercent1RM:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: Mutually exclusive with targetWeightLbs.
+        targetRPE:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 10
+          nullable: true
+
+    ProgramDay:
+      type: object
+      required: [id, programId, weekNumber, dayNumber, slots, updatedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        programId:
+          $ref: '#/components/schemas/UUID'
+        weekNumber:
+          type: integer
+          minimum: 1
+        dayNumber:
+          type: integer
+          minimum: 1
+          maximum: 7
+        label:
+          type: string
+          nullable: true
+          example: "Squat Day"
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExerciseSlot'
+        updatedAt:
+          $ref: '#/components/schemas/ISODateTime'
+
+    ProgramDayList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProgramDay'
+
+    SlotInput:
+      type: object
+      required: [exerciseId, order, targetSets, targetReps]
+      properties:
+        exerciseId:
+          $ref: '#/components/schemas/UUID'
+        order:
+          type: integer
+          minimum: 0
+        targetSets:
+          type: integer
+          minimum: 1
+        targetReps:
+          type: integer
+          minimum: 1
+        targetWeightLbs:
+          type: number
+          format: float
+          nullable: true
+        targetPercent1RM:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          nullable: true
+        targetRPE:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 10
+          nullable: true
+
+    CreateProgramDayRequest:
+      type: object
+      required: [weekNumber, dayNumber]
+      properties:
+        weekNumber:
+          type: integer
+          minimum: 1
+        dayNumber:
+          type: integer
+          minimum: 1
+          maximum: 7
+        label:
+          type: string
+          nullable: true
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/SlotInput'
+          default: []
+
+    UpdateProgramDayRequest:
+      type: object
+      minProperties: 1
+      properties:
+        label:
+          type: string
+          nullable: true
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/SlotInput'
+          description: Replaces all slots when provided.
+
+    # --- Assignments (REQ-010, REQ-011) ---------------------------------------
+
+    Assignment:
+      type: object
+      required: [id, programId, athleteId, coachId, startDate, assignedAt, status]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        programId:
+          $ref: '#/components/schemas/UUID'
+        athleteId:
+          $ref: '#/components/schemas/UUID'
+        coachId:
+          $ref: '#/components/schemas/UUID'
+        startDate:
+          $ref: '#/components/schemas/ISODate'
+        assignedAt:
+          $ref: '#/components/schemas/ISODateTime'
+        status:
+          type: string
+          enum: [active, completed, cancelled]
+
+    AssignProgramRequest:
+      type: object
+      required: [athleteIds, startDate]
+      properties:
+        athleteIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/UUID'
+          minItems: 1
+        startDate:
+          $ref: '#/components/schemas/ISODate'
+
+    AssignmentList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Assignment'
+
+    ActiveAssignment:
+      type: object
+      required: [assignment, program, days]
+      properties:
+        assignment:
+          $ref: '#/components/schemas/Assignment'
+        program:
+          $ref: '#/components/schemas/Program'
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProgramDay'
+        currentDayId:
+          $ref: '#/components/schemas/UUID'
+          nullable: true
+          description: |
+            ID of the ProgramDay corresponding to today based on `startDate`.
+            Null when today falls outside the program's scheduled training days.
+
+    # --- Sessions (REQ-012, REQ-013, REQ-016, REQ-017) -----------------------
+
+    Session:
+      type: object
+      required: [id, athleteId, date, status, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        athleteId:
+          $ref: '#/components/schemas/UUID'
+        date:
+          $ref: '#/components/schemas/ISODate'
+        status:
+          type: string
+          enum: [open, closed]
+        bodyweightLbs:
+          type: number
+          format: float
+          nullable: true
+        assignmentId:
+          $ref: '#/components/schemas/UUID'
+          nullable: true
+        programDayId:
+          $ref: '#/components/schemas/UUID'
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        createdAt:
+          $ref: '#/components/schemas/ISODateTime'
+        closedAt:
+          $ref: '#/components/schemas/ISODateTime'
+          nullable: true
+
+    SessionDetail:
+      allOf:
+        - $ref: '#/components/schemas/Session'
+        - type: object
+          required: [sets]
+          properties:
+            sets:
+              type: array
+              items:
+                $ref: '#/components/schemas/Set'
+
+    SessionSummary:
+      type: object
+      required: [id, date, status, exerciseCount, linkedToProgram]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        date:
+          $ref: '#/components/schemas/ISODate'
+        status:
+          type: string
+          enum: [open, closed]
+        exerciseCount:
+          type: integer
+          description: Count of distinct exercises logged in this session.
+        linkedToProgram:
+          type: boolean
+        bodyweightLbs:
+          type: number
+          format: float
+          nullable: true
+
+    SessionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionSummary'
+        nextCursor:
+          type: string
+          nullable: true
+          description: Opaque Astra DB pageState token for the next page.
+
+    CreateSessionRequest:
+      type: object
+      required: [date]
+      properties:
+        date:
+          $ref: '#/components/schemas/ISODate'
+        assignmentId:
+          $ref: '#/components/schemas/UUID'
+          nullable: true
+        programDayId:
+          $ref: '#/components/schemas/UUID'
+          nullable: true
+        bodyweightLbs:
+          type: number
+          format: float
+          nullable: true
+
+    UpdateSessionRequest:
+      type: object
+      minProperties: 1
+      properties:
+        bodyweightLbs:
+          type: number
+          format: float
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [closed]
+          description: |
+            Only `closed` is accepted — sessions cannot be reopened.
+            Closing locks the session against further set edits.
+
+    # --- Sets (REQ-014, REQ-015) ----------------------------------------------
+
+    Set:
+      type: object
+      required: [id, sessionId, exerciseId, weightLbs, reps, order, isPR, createdAt, updatedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        sessionId:
+          $ref: '#/components/schemas/UUID'
+        exerciseId:
+          $ref: '#/components/schemas/UUID'
+        weightLbs:
+          type: number
+          format: float
+          minimum: 0
+          example: 225.0
+        reps:
+          type: integer
+          minimum: 1
+          example: 5
+        rpe:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 10
+          nullable: true
+          example: 8.5
+        rir:
+          type: integer
+          minimum: 0
+          maximum: 5
+          nullable: true
+          example: 2
+        videoUrl:
+          type: string
+          format: uri
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        order:
+          type: integer
+          minimum: 0
+        isPR:
+          type: boolean
+        createdAt:
+          $ref: '#/components/schemas/ISODateTime'
+        updatedAt:
+          $ref: '#/components/schemas/ISODateTime'
+
+    CreateSetRequest:
+      type: object
+      required: [exerciseId, weightLbs, reps]
+      properties:
+        exerciseId:
+          $ref: '#/components/schemas/UUID'
+        weightLbs:
+          type: number
+          format: float
+          minimum: 0
+        reps:
+          type: integer
+          minimum: 1
+        rpe:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 10
+          nullable: true
+        rir:
+          type: integer
+          minimum: 0
+          maximum: 5
+          nullable: true
+        videoUrl:
+          type: string
+          format: uri
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    UpdateSetRequest:
+      type: object
+      minProperties: 1
+      properties:
+        weightLbs:
+          type: number
+          format: float
+          minimum: 0
+        reps:
+          type: integer
+          minimum: 1
+        rpe:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 10
+          nullable: true
+        rir:
+          type: integer
+          minimum: 0
+          maximum: 5
+          nullable: true
+        videoUrl:
+          type: string
+          format: uri
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    # --- Personal Records (REQ-018, REQ-019, REQ-020) ------------------------
+
+    PersonalRecord:
+      type: object
+      required: [id, athleteId, exerciseId, setId, sessionId, weightLbs, reps, achievedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        athleteId:
+          $ref: '#/components/schemas/UUID'
+        exerciseId:
+          $ref: '#/components/schemas/UUID'
+        setId:
+          $ref: '#/components/schemas/UUID'
+        sessionId:
+          $ref: '#/components/schemas/UUID'
+        weightLbs:
+          type: number
+          format: float
+        reps:
+          type: integer
+        achievedAt:
+          $ref: '#/components/schemas/ISODate'
+        exercise:
+          $ref: '#/components/schemas/Exercise'
+
+    PRList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonalRecord'
+
+    MarkPRRequest:
+      type: object
+      required: [setId]
+      properties:
+        setId:
+          $ref: '#/components/schemas/UUID'
+          description: |
+            The set to mark as PR for its exercise. Must belong to a closed
+            session owned by the caller. Replaces any previous PR for that exercise.
+
+    # --- Compliance (REQ-022) ------------------------------------------------
+
+    ComplianceDay:
+      type: object
+      required: [programDayId, weekNumber, dayNumber, plannedDate, completed]
+      properties:
+        programDayId:
+          $ref: '#/components/schemas/UUID'
+        weekNumber:
+          type: integer
+        dayNumber:
+          type: integer
+        plannedDate:
+          $ref: '#/components/schemas/ISODate'
+        completed:
+          type: boolean
+        sessionId:
+          $ref: '#/components/schemas/UUID'
+          nullable: true
+          description: ID of the session logged against this day, if completed.
+
+    ComplianceReport:
+      type: object
+      required: [assignmentId, days]
+      properties:
+        assignmentId:
+          $ref: '#/components/schemas/UUID'
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceDay'
+
+  # ---------------------------------------------------------------------------
+  # REUSABLE RESPONSES
+  # ---------------------------------------------------------------------------
+  responses:
+
+    400BadRequest:
+      description: Request validation failed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: "https://api.example.com/problems/validation-error"
+            title: "Validation Error"
+            status: 400
+            detail: "password must be at least 8 characters"
+
+    401Unauthorized:
+      description: Missing or invalid access token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: "https://api.example.com/problems/unauthorized"
+            title: "Unauthorized"
+            status: 401
+            detail: "Bearer token is missing or expired"
+
+    403Forbidden:
+      description: Authenticated but insufficient role or resource ownership.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: "https://api.example.com/problems/forbidden"
+            title: "Forbidden"
+            status: 403
+            detail: "You do not have access to this resource"
+
+    404NotFound:
+      description: Resource not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: "https://api.example.com/problems/not-found"
+            title: "Not Found"
+            status: 404
+
+    409Conflict:
+      description: Conflict with existing state.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: "https://api.example.com/problems/conflict"
+            title: "Conflict"
+            status: 409
+            detail: "An account with this email already exists"
+
+    422UnprocessableEntity:
+      description: Business rule violation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: "https://api.example.com/problems/unprocessable"
+            title: "Unprocessable Entity"
+            status: 422
+            detail: "Sets cannot be edited after the session is closed"
+
+# =============================================================================
+# PATHS
+# =============================================================================
+paths:
+
+  # ---------------------------------------------------------------------------
+  # AUTH  ·  REQ-001, REQ-002
+  # ---------------------------------------------------------------------------
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: registerUser
+      summary: Register a new account
+      x-req: [REQ-001]
+      description: |
+        **REQ-001** — Creates a new user with email, password, and role.
+        Rejects duplicate emails (409). Password must be ≥ 8 characters.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        "201":
+          description: Account created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "409":
+          $ref: '#/components/responses/409Conflict'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: loginUser
+      summary: Log in with email and password
+      x-req: [REQ-002]
+      description: |
+        **REQ-002** — Returns a JWT access token and sets a refresh token
+        (`httpOnly` cookie). Incorrect credentials return 401 without revealing
+        which field is wrong.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        "200":
+          description: Login successful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logoutUser
+      summary: Log out and end the current session
+      x-req: [REQ-002]
+      description: |
+        **REQ-002** — Invalidates the refresh token cookie and the server-side
+        session reference.
+      responses:
+        "204":
+          description: Logged out successfully.
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+
+  /auth/token:
+    post:
+      tags: [Auth]
+      operationId: refreshToken
+      summary: Exchange refresh token cookie for a new access token
+      description: |
+        Uses the httpOnly refresh token cookie set during login or registration.
+        No request body required. Returns a new access token.
+      security: []
+      responses:
+        "200":
+          description: New access token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+
+  # ---------------------------------------------------------------------------
+  # USERS / PROFILE  ·  REQ-003, REQ-004
+  # ---------------------------------------------------------------------------
+
+  /users/{userId}:
+    get:
+      tags: [Users]
+      operationId: getUserProfile
+      summary: Get a user's profile
+      x-req: [REQ-003, REQ-004]
+      description: |
+        **REQ-003, REQ-004** — Retrieves an athlete or coach profile. Athletes
+        can read their own profile and profiles of their linked coaches. Coaches
+        can read their own profile and profiles of their linked athletes.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: User profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSummary'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+    patch:
+      tags: [Users]
+      operationId: updateUserProfile
+      summary: Update a user's profile
+      x-req: [REQ-003, REQ-004]
+      description: |
+        **REQ-003, REQ-004** — Partial update of profile fields. Users may only
+        update their own profile. Shape of accepted body depends on caller's
+        role.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/UpdateAthleteProfileRequest'
+                - $ref: '#/components/schemas/UpdateCoachProfileRequest'
+      responses:
+        "200":
+          description: Profile updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSummary'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+  # ---------------------------------------------------------------------------
+  # RELATIONSHIPS  ·  REQ-005
+  # ---------------------------------------------------------------------------
+
+  /coaches/{coachId}/athletes:
+    get:
+      tags: [Relationships]
+      operationId: listCoachAthletes
+      summary: List athletes on a coach's roster
+      x-req: [REQ-005]
+      description: |
+        **REQ-005** — Returns all athletes with `status: active` for the given
+        coach. Caller must be the coach identified by `coachId`.
+      parameters:
+        - name: coachId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Active athlete roster.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AthleteRosterEntry'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+
+    post:
+      tags: [Relationships]
+      operationId: inviteAthlete
+      summary: Send a coach invitation to an athlete by email
+      x-req: [REQ-005]
+      description: |
+        **REQ-005** — Coach sends an invitation to the athlete with the given
+        email address. Creates a relationship with `status: pending`. Returns
+        404 if no athlete account is found for that email, 409 if an active or
+        pending relationship already exists.
+      parameters:
+        - name: coachId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteAthleteRequest'
+      responses:
+        "201":
+          description: Invitation sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relationship'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "409":
+          $ref: '#/components/responses/409Conflict'
+
+  /coaches/{coachId}/athletes/{athleteId}:
+    delete:
+      tags: [Relationships]
+      operationId: removeAthleteFromRoster
+      summary: Remove an athlete from the coach's roster
+      x-req: [REQ-005]
+      description: |
+        **REQ-005** — Sets the relationship `status` to `removed`. The coach
+        can no longer access the athlete's data.
+      parameters:
+        - name: coachId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: athleteId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "204":
+          description: Athlete removed from roster.
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+  /users/{userId}/invitations:
+    get:
+      tags: [Relationships]
+      operationId: listInvitations
+      summary: List pending coach invitations for an athlete
+      x-req: [REQ-005]
+      description: |
+        **REQ-005** — Returns all `status: pending` relationships for the given
+        athlete. Caller must be the athlete identified by `userId`.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Pending invitations.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Relationship'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+
+  /invitations/{invitationId}:
+    patch:
+      tags: [Relationships]
+      operationId: respondToInvitation
+      summary: Accept or decline a coach invitation
+      x-req: [REQ-005]
+      description: |
+        **REQ-005** — Athlete accepts or declines a pending invitation.
+        - `accept` → `status: active`
+        - `decline` → `status: declined`
+
+        Returns 422 if the invitation is not in `pending` state.
+      parameters:
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RespondInvitationRequest'
+      responses:
+        "200":
+          description: Invitation updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relationship'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "422":
+          $ref: '#/components/responses/422UnprocessableEntity'
+
+  /users/{userId}/coaches:
+    get:
+      tags: [Relationships]
+      operationId: listAthleteCoaches
+      summary: List coaches linked to an athlete
+      x-req: [REQ-005]
+      description: |
+        **REQ-005** — Returns all active coach relationships for the athlete.
+        Caller must be the athlete identified by `userId`.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Linked coaches.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Relationship'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+
+  # ---------------------------------------------------------------------------
+  # EXERCISES  ·  REQ-006, REQ-007
+  # ---------------------------------------------------------------------------
+
+  /exercises:
+    get:
+      tags: [Exercises]
+      operationId: listExercises
+      summary: List all available exercises
+      x-req: [REQ-006, REQ-007]
+      description: |
+        **REQ-006, REQ-007** — Returns the default library plus any custom
+        exercises created by the caller. Optionally filter by `isDefault`.
+      parameters:
+        - name: isDefault
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Filter to default exercises only (`true`) or custom only (`false`).
+      responses:
+        "200":
+          description: Exercise list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExerciseList'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+
+    post:
+      tags: [Exercises]
+      operationId: createExercise
+      summary: Create a custom exercise
+      x-req: [REQ-007]
+      description: |
+        **REQ-007** — Any authenticated user can create a custom exercise.
+        The exercise is attributed to the caller (`createdBy`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExerciseRequest'
+      responses:
+        "201":
+          description: Exercise created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Exercise'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+
+  /exercises/{exerciseId}:
+    get:
+      tags: [Exercises]
+      operationId: getExercise
+      summary: Get a single exercise by ID
+      x-req: [REQ-006, REQ-007]
+      parameters:
+        - name: exerciseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Exercise detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Exercise'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+    patch:
+      tags: [Exercises]
+      operationId: updateExercise
+      summary: Rename a custom exercise
+      x-req: [REQ-007]
+      description: |
+        **REQ-007** — Owner can rename their custom exercise. Default exercises
+        cannot be modified (403).
+      parameters:
+        - name: exerciseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateExerciseRequest'
+      responses:
+        "200":
+          description: Exercise updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Exercise'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+    delete:
+      tags: [Exercises]
+      operationId: deleteExercise
+      summary: Delete a custom exercise
+      x-req: [REQ-007]
+      description: |
+        **REQ-007** — Owner can delete their custom exercise. Default exercises
+        cannot be deleted (403).
+      parameters:
+        - name: exerciseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "204":
+          description: Exercise deleted.
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+  # ---------------------------------------------------------------------------
+  # PROGRAMS  ·  REQ-008
+  # ---------------------------------------------------------------------------
+
+  /programs:
+    get:
+      tags: [Programs]
+      operationId: listPrograms
+      summary: List programs authored by the caller
+      x-req: [REQ-008]
+      description: |
+        **REQ-008** — Returns all programs owned by the authenticated coach.
+        Coach role required.
+      responses:
+        "200":
+          description: Program list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramList'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+
+    post:
+      tags: [Programs]
+      operationId: createProgram
+      summary: Create a new program (saved as draft)
+      x-req: [REQ-008]
+      description: |
+        **REQ-008** — Creates a program with `status: draft`. Coach role required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProgramRequest'
+      responses:
+        "201":
+          description: Program created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Program'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+
+  /programs/{programId}:
+    get:
+      tags: [Programs]
+      operationId: getProgram
+      summary: Get a program by ID
+      x-req: [REQ-008, REQ-011]
+      description: |
+        **REQ-008, REQ-011** — Coach can retrieve their own program; athlete
+        can retrieve a program they are assigned to.
+      parameters:
+        - name: programId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Program detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Program'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+    patch:
+      tags: [Programs]
+      operationId: updateProgram
+      summary: Update a program
+      x-req: [REQ-008]
+      description: |
+        **REQ-008** — Coach can edit a program that has no active assignments.
+        Returns 422 if the program has active assignments.
+      parameters:
+        - name: programId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProgramRequest'
+      responses:
+        "200":
+          description: Program updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Program'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "422":
+          $ref: '#/components/responses/422UnprocessableEntity'
+
+    delete:
+      tags: [Programs]
+      operationId: deleteProgram
+      summary: Delete a program
+      x-req: [REQ-008]
+      description: |
+        **REQ-008** — Coach can delete a draft program with no active
+        assignments. Returns 422 if active assignments exist.
+      parameters:
+        - name: programId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "204":
+          description: Program deleted.
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "422":
+          $ref: '#/components/responses/422UnprocessableEntity'
+
+  # ---------------------------------------------------------------------------
+  # PROGRAM DAYS  ·  REQ-009, REQ-011
+  # ---------------------------------------------------------------------------
+
+  /programs/{programId}/days:
+    get:
+      tags: [Programs]
+      operationId: listProgramDays
+      summary: List all training days for a program
+      x-req: [REQ-009, REQ-011]
+      description: |
+        **REQ-009, REQ-011** — Returns all program_day documents ordered by
+        `weekNumber`, `dayNumber`. Accessible to the owning coach and to
+        athletes assigned to the program.
+      parameters:
+        - name: programId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Program days.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramDayList'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+    post:
+      tags: [Programs]
+      operationId: createProgramDay
+      summary: Add a training day to a program
+      x-req: [REQ-009]
+      description: |
+        **REQ-009** — Creates a new day with the given week/day numbers and
+        optional exercise slots. Returns 409 if that week/day pair already
+        exists for this program. Coach role required.
+      parameters:
+        - name: programId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProgramDayRequest'
+      responses:
+        "201":
+          description: Program day created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramDay'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "409":
+          $ref: '#/components/responses/409Conflict'
+
+  /programs/{programId}/days/{dayId}:
+    get:
+      tags: [Programs]
+      operationId: getProgramDay
+      summary: Get a single training day
+      x-req: [REQ-009, REQ-011]
+      parameters:
+        - name: programId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: dayId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Program day detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramDay'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+    patch:
+      tags: [Programs]
+      operationId: updateProgramDay
+      summary: Update exercises or order within a training day
+      x-req: [REQ-009]
+      description: |
+        **REQ-009** — Partial update of a program day. When `slots` is provided
+        it replaces all existing slots (full replacement of the ordered list).
+        Coach role, program ownership required.
+      parameters:
+        - name: programId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: dayId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProgramDayRequest'
+      responses:
+        "200":
+          description: Program day updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramDay'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+  # ---------------------------------------------------------------------------
+  # ASSIGNMENTS  ·  REQ-010, REQ-011
+  # ---------------------------------------------------------------------------
+
+  /programs/{programId}/assignments:
+    post:
+      tags: [Assignments]
+      operationId: assignProgram
+      summary: Assign a program to one or more athletes
+      x-req: [REQ-010]
+      description: |
+        **REQ-010** — Coach assigns a program to one or more athletes from
+        their roster with a start date. Creates one `Assignment` document per
+        athlete. Athletes are notified asynchronously. Coach role required.
+      parameters:
+        - name: programId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignProgramRequest'
+      responses:
+        "201":
+          description: Assignments created — one per athlete.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssignmentList'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+  /users/{userId}/assignments:
+    get:
+      tags: [Assignments]
+      operationId: listUserAssignments
+      summary: List program assignments for a user
+      x-req: [REQ-011]
+      description: |
+        **REQ-011** — Athlete views their current (and past) program
+        assignments. Returns the full assignment list; filter `status=active`
+        client-side or server-side to find the active one.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, completed, cancelled]
+          description: Filter by assignment status.
+      responses:
+        "200":
+          description: Assignment list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssignmentList'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+  /users/{userId}/assignments/active:
+    get:
+      tags: [Assignments]
+      operationId: getActiveAssignment
+      summary: Get the athlete's active program assignment with full structure
+      x-req: [REQ-011]
+      description: |
+        **REQ-011** — Returns the active assignment together with the full
+        program metadata and all training days. `currentDayId` is computed from
+        today's date and `startDate`. Returns 404 with a clear message when no
+        active assignment exists — the frontend should display
+        "No program assigned."
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Active assignment with program structure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActiveAssignment'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          description: No active assignment found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: "https://api.example.com/problems/not-found"
+                title: "No Active Assignment"
+                status: 404
+                detail: "This athlete has no active program assignment."
+
+  # ---------------------------------------------------------------------------
+  # SESSIONS  ·  REQ-012, REQ-013, REQ-016, REQ-017
+  # ---------------------------------------------------------------------------
+
+  /sessions:
+    post:
+      tags: [Sessions]
+      operationId: createSession
+      summary: Start a new workout session
+      x-req: [REQ-012, REQ-013]
+      description: |
+        **REQ-012, REQ-013** — Creates an `open` session for the authenticated
+        athlete. Only one session per `(athleteId, date)` is permitted (409 on
+        duplicate). Optionally links to a program day and records bodyweight.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        "201":
+          description: Session started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "409":
+          description: A session already exists for this athlete on this date.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: "https://api.example.com/problems/conflict"
+                title: "Conflict"
+                status: 409
+                detail: "A session already exists for this date."
+
+  /users/{userId}/sessions:
+    get:
+      tags: [Sessions]
+      operationId: listUserSessions
+      summary: List sessions for a user in reverse chronological order
+      x-req: [REQ-017]
+      description: |
+        **REQ-017** — Returns session summaries for the given athlete.
+        Athletes can access their own history; coaches can access linked
+        athletes' history (**REQ-021**). Supports cursor-based pagination.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque pagination cursor (Astra DB pageState).
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Paginated session list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionList'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+  /sessions/{sessionId}:
+    get:
+      tags: [Sessions]
+      operationId: getSession
+      summary: Get full session detail including all sets
+      x-req: [REQ-017, REQ-021]
+      description: |
+        **REQ-017, REQ-021** — Returns session metadata and the ordered array
+        of sets. Athletes access their own sessions; coaches access linked
+        athletes' sessions (read-only).
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: Session detail with sets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionDetail'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+    patch:
+      tags: [Sessions]
+      operationId: updateSession
+      summary: Update session bodyweight, notes, or close it
+      x-req: [REQ-013, REQ-016]
+      description: |
+        **REQ-013, REQ-016** — Partial update. Setting `status: closed` locks
+        the session — sets can no longer be added, edited, or deleted. Sessions
+        cannot be reopened (422 if `status` already `closed`).
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSessionRequest'
+      responses:
+        "200":
+          description: Session updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "422":
+          $ref: '#/components/responses/422UnprocessableEntity'
+
+    delete:
+      tags: [Sessions]
+      operationId: deleteSession
+      summary: Delete an open session
+      x-req: [REQ-012]
+      description: |
+        **REQ-012** — Athletes can delete an `open` session (e.g. started by
+        mistake). Closed sessions cannot be deleted (422).
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "204":
+          description: Session deleted.
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "422":
+          $ref: '#/components/responses/422UnprocessableEntity'
+
+  # ---------------------------------------------------------------------------
+  # SETS  ·  REQ-014, REQ-015
+  # ---------------------------------------------------------------------------
+
+  /sessions/{sessionId}/sets:
+    post:
+      tags: [Sets]
+      operationId: createSet
+      summary: Log a set in an open session
+      x-req: [REQ-014]
+      description: |
+        **REQ-014** — Appends a set to the session (assigned `order = max + 1`).
+        Required fields: `exerciseId`, `weightLbs`, `reps`. Returns 422 if the
+        session is closed.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSetRequest'
+      responses:
+        "201":
+          description: Set logged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Set'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "422":
+          $ref: '#/components/responses/422UnprocessableEntity'
+
+  /sessions/{sessionId}/sets/{setId}:
+    patch:
+      tags: [Sets]
+      operationId: updateSet
+      summary: Edit a set in an open session
+      x-req: [REQ-015]
+      description: |
+        **REQ-015** — Partial update of any set field. Returns 422 if the
+        parent session is `closed`.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: setId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSetRequest'
+      responses:
+        "200":
+          description: Set updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Set'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "422":
+          $ref: '#/components/responses/422UnprocessableEntity'
+
+    delete:
+      tags: [Sets]
+      operationId: deleteSet
+      summary: Delete a set from an open session
+      x-req: [REQ-015]
+      description: |
+        **REQ-015** — Removes the set. Returns 422 if the parent session is
+        `closed`.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: setId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "204":
+          description: Set deleted.
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "422":
+          $ref: '#/components/responses/422UnprocessableEntity'
+
+  # ---------------------------------------------------------------------------
+  # PERSONAL RECORDS  ·  REQ-018, REQ-019, REQ-020
+  # ---------------------------------------------------------------------------
+
+  /users/{userId}/prs:
+    get:
+      tags: [PersonalRecords]
+      operationId: listUserPRs
+      summary: List personal records for a user
+      x-req: [REQ-019, REQ-020]
+      description: |
+        **REQ-019** — Athlete views their own PR list (one entry per exercise).
+        **REQ-020** — Coach views a linked athlete's PR list (read-only).
+        Each entry includes: exercise name, weight (lbs), reps, date achieved,
+        and a link to the originating session via `sessionId`.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: PR list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PRList'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+    post:
+      tags: [PersonalRecords]
+      operationId: markPR
+      summary: Mark a set as a personal record
+      x-req: [REQ-018]
+      description: |
+        **REQ-018** — Flags the given set as the PR for its exercise.
+        - The set must belong to a **closed** session owned by `userId`.
+        - If the exercise already has a PR, the old set's `isPR` is set to
+          `false` and the `personal_records` document is replaced.
+        - Only athletes can mark PRs for themselves; coaches cannot (403).
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkPRRequest'
+      responses:
+        "200":
+          description: PR recorded (upsert — returns the new PR document).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalRecord'
+        "400":
+          $ref: '#/components/responses/400BadRequest'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+        "422":
+          description: Set belongs to an open session or does not exist.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: "https://api.example.com/problems/unprocessable"
+                title: "Unprocessable Entity"
+                status: 422
+                detail: "A PR can only be marked from a closed session."
+
+  /users/{userId}/prs/{exerciseId}:
+    get:
+      tags: [PersonalRecords]
+      operationId: getUserPRForExercise
+      summary: Get the current PR for a specific exercise
+      x-req: [REQ-019, REQ-020]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: exerciseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "200":
+          description: PR for the exercise.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalRecord'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+    delete:
+      tags: [PersonalRecords]
+      operationId: deletePR
+      summary: Unmark the PR for an exercise
+      x-req: [REQ-018]
+      description: |
+        **REQ-018** — Clears the PR for the given exercise. Sets `isPR: false`
+        on the previously flagged set. Only the owning athlete can call this.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: exerciseId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        "204":
+          description: PR cleared.
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+  # ---------------------------------------------------------------------------
+  # COACH DASHBOARD  ·  REQ-021, REQ-022
+  # ---------------------------------------------------------------------------
+
+  /coaches/{coachId}/athletes/{athleteId}/sessions:
+    get:
+      tags: [CoachDashboard]
+      operationId: getAthleteSessionsAsCoach
+      summary: Coach views an athlete's full session history
+      x-req: [REQ-021]
+      description: |
+        **REQ-021** — Returns session summaries in reverse chronological order.
+        The coach must have an active relationship with the athlete. Coach has
+        **read-only** access; any attempt to mutate athlete sessions returns 403.
+      parameters:
+        - name: coachId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: athleteId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Athlete session list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionList'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'
+
+  /coaches/{coachId}/athletes/{athleteId}/compliance:
+    get:
+      tags: [CoachDashboard]
+      operationId: getComplianceReport
+      summary: View program compliance for an athlete's assignment
+      x-req: [REQ-022]
+      description: |
+        **REQ-022** — Returns one entry per program day covering the full
+        assignment duration. Completed days have `completed: true` and a
+        `sessionId`; missed days have `completed: false` and `sessionId: null`.
+        Coach must have an active relationship with the athlete.
+      parameters:
+        - name: coachId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: athleteId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: assignmentId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+          description: The assignment to generate the compliance report for.
+      responses:
+        "200":
+          description: Compliance report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReport'
+        "401":
+          $ref: '#/components/responses/401Unauthorized'
+        "403":
+          $ref: '#/components/responses/403Forbidden'
+        "404":
+          $ref: '#/components/responses/404NotFound'

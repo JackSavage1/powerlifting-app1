@@ -1,0 +1,18 @@
+{
+  "type": "module",
+  "scripts": {
+    "start":   "node src/server.js",
+    "seed":    "node src/seed.js",
+    "init-db": "node src/init-db.js",
+    "test":    "node --test --test-timeout=30000 test/*.test.js"
+  },
+  "dependencies": {
+    "@datastax/astra-db-ts": "^2.2.1",
+    "@fastify/cookie": "^9.4.0",
+    "@fastify/jwt": "^8.0.1",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.3.1",
+    "fastify": "^4.29.1",
+    "fastify-plugin": "^5.1.0"
+  }
+}
